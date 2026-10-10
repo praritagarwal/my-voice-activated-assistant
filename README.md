@@ -1,6 +1,6 @@
 # Treadmill Browser Assistant
 
-A local voice/typed assistant for controlling YouTube in Chrome. Current revision: **0.4.1-error-resume-beta**, extending the verified **0.1.0-ptt** baseline. Voice recognition uses Whisper tiny.en (faster-whisper CPU int8); command interpretation uses Ollama Qwen3-1.7B; short spoken announcements use the lightweight KittenTTS nano int8 model.
+A local voice/typed assistant for controlling YouTube in Chrome. Current revision: **0.4.2-controller-connection-beta**, extending the verified **0.1.0-ptt** baseline. Voice recognition uses Whisper tiny.en (faster-whisper CPU int8); command interpretation uses Ollama Qwen3-1.7B; short spoken announcements use the lightweight KittenTTS nano int8 model.
 
 This revision adds experimental local **Hey Jarvis** activation. Start with stationary tests, including background YouTube audio, before treadmill testing. F8 push-to-talk remains available for stationary fallback.
 
@@ -20,7 +20,7 @@ Reload the extension in chrome://extensions, refresh YouTube and reopen the Cont
 
 ## Direct playback fix
 
-Direct continue/resume phrases skip optional before/after snapshots even in debug mode. Play, pause and seek use an injected browser operation independent of the content script, and verify play/pause state. Navigation and numbering still use the content script. Reload extension 1.14.3 and reopen the Controller tab. `--no-debug` also disables optional snapshots for other commands.
+Direct continue/resume phrases skip optional before/after snapshots even in debug mode. Play, pause and seek use an injected browser operation independent of the content script, and verify play/pause state. Navigation and numbering still use the content script. Reload extension 1.15.0 once; the Controller then opens automatically. `--no-debug` also disables optional snapshots for other commands.
 
 ## Productionization stage 1: explicit local model loading
 
@@ -36,11 +36,21 @@ Setup is the only voice-model download step. It prepares Whisper tiny.en, the co
 
 Normal voice startup requires prepared files and loads local folders in offline mode. Missing files or changed model IDs produce a setup instruction instead of a silent download. Set tts_enabled=false to run without preparing KittenTTS. These checks verify required file presence, not model integrity. Normal startup needs no Hugging Face connection; YouTube still needs internet and Ollama must remain available locally.
 
-Do not commit models/ or config.json. Automatic Controller startup, connection recovery and a Windows installer are subsequent stages, not included here. Model downloads and physical Windows inference have not been exercised in this build environment; verify on your current Conda install before committing this stage.
+Do not commit models/ or config.json. Automatic Controller startup and connection recovery are included below; a Windows installer is still pending. Model downloads and physical Windows inference have not been exercised in this build environment; verify on your current Conda install before committing this stage.
 
 ## Error cleanup
 
 Temporary wake pauses now restore after browser errors, timeouts, command interpretation errors or cancelled capture. Cleanup runs before error speech for known failures and again on final exit if needed. Successful pause/play, selection, next/previous or navigation still owns playback. The browser only restores the original matching page/player/source, so failed navigation cannot accidentally start another video. A disconnected Controller can prevent immediate cleanup; the terminal reports that limitation.
+
+## Productionization stage 2: Controller startup and recovery
+
+Reload extension version 1.15.0 once, close old Controller tabs, and keep Chrome running. Run the assistant as usual. The extension discovers the local server and opens or reuses a background Controller tab. Discovery uses a Chrome alarm and may take about 30 seconds or longer if Chrome delays the alarm. The toolbar icon still opens the tab immediately. This stage does not launch a closed Chrome browser.
+
+Python waits for the Controller handshake before accepting commands and prints Browser connected. The Controller sends heartbeats every three seconds and reconnects after server interruptions. Command polls also refresh the connection, with a 45-second lease to tolerate background timer throttling. Closing the tab sends a best-effort disconnect notice. The tab is marked not automatically discardable. Python waits between interactions when the heartbeat expires. Only one Controller has an active lease; duplicate tabs cannot drain the command queue. Each Python start has a new session ID. Expired queued commands and results from old sessions are rejected and are never replayed on reconnect. An already-running action cannot be cancelled by this protocol.
+
+If connection is lost during an interaction, the action times out and playback cleanup is attempted. The existing matching-video timeout fallback remains best-effort; successful explicit playback commands cancel that fallback. A connection outage can still prevent immediate playback restoration. No microphone command processing starts before the initial browser handshake. User microphone and TTS settings are unchanged.
+
+New API: /health, /connect and session-aware /next and /result. Older extension versions need updating before they can connect. Chrome must have the extension installed in the profile you open. The default server port remains 8765; a custom Python port still needs matching extension configuration.
 
 ## Current capabilities
 
@@ -102,7 +112,7 @@ Gain is applied before openWakeWord and to captured command audio before Whisper
 
 The existing openWakeWord model files from the comparison script are reused. No custom-model training is needed. Supplied pretrained openWakeWord wake models are CC BY-NC-SA 4.0; the framework code is Apache-2.0. This ZIP does not bundle model weights or change your repository's license.
 
-Validation: 32 logic tests pass, including effective gain measurements, recognition-independent boosting, gain limits, below-floor gating, silence, clipping protection, PCM conversion and disabled gain. Python compilation and extension syntax checks pass. Five mocked browser pause/resume scenarios passed (restore, explicit playback ownership, already paused, changed video and expired pause). Acoustic improvements and false-trigger rate have not been measured; run the comparison on your headset before committing this as a working release.
+Validation: 46 Python tests pass, including connection/API expiry, duplicate Controllers and server restart checks; three mocked automatic Controller startup scenarios also pass, including effective gain measurements, recognition-independent boosting, gain limits, below-floor gating, silence, clipping protection, PCM conversion and disabled gain. Python compilation and extension syntax checks pass. Five mocked browser pause/resume scenarios passed (restore, explicit playback ownership, already paused, changed video and expired pause). Acoustic improvements and false-trigger rate have not been measured; run the comparison on your headset before committing this as a working release.
 
 ## Requirements
 
@@ -154,7 +164,7 @@ python voice_devices.py
 4. Click the extension toolbar icon to open **Treadmill Controller**. Keep this tab open; it can remain in the background. The `chrome://extensions` settings tab does not need to stay open.
 5. Keep Ollama running, then start the assistant as below.
 
-The extension uses a Controller tab to poll the local Flask server (default port 8765). This release does not automatically open, recover or verify the Controller at startup. The startup voice message confirms voice loading, not browser connectivity. Extension permissions include broad host access for existing screenshot/tab functionality; review `extension/manifest.json` before distribution.
+The extension uses a Controller tab to poll the local Flask server (default port 8765). This release opens or reuses the Controller automatically when Chrome is running, verifies its handshake and reconnects after interruptions. Extension permissions include broad host access for existing screenshot/tab functionality; review `extension/manifest.json` before distribution.
 
 ## Test and run
 
@@ -250,7 +260,7 @@ The 10-second user-observed delay is not yet attributed to a particular stage. N
 - Shuffle is a toggle, not an explicit enabled/disabled setter.
 - Named playlist selection exists; named song selection and add/remove playlist entries do not.
 - Numbering/listing represents loaded content, not every account item. Numbered songs must be visible to select through the existing command. Further scrolling may be needed.
-- Wake phrase is experimental; automatic Controller startup and connection heartbeat are not implemented.
+- Wake phrase remains experimental; Controller startup and connection heartbeat are implemented but need Windows runtime verification.
 - Diagnostic snapshots and synchronous speech can add latency. Packaging alone does not remove these waits.
 - ASR can misrecognize speech, particularly with poor microphones or background media. Do not treat the stationary test build as a hands-free treadmill release.
 
@@ -272,7 +282,7 @@ Desired playlist interface:
 Next release priorities:
 
 1. Test and tune the new wake phrase/VAD against misses and false triggers from YouTube/treadmill noise. Detection is suspended during assistant speech, but background speech can still trigger it.
-2. Automatically start/open Controller, verify connection before announcing Ready, and announce disconnections.
+2. Verify automatic Controller discovery and reconnection on Windows; add packaged Chrome launch and further recovery polish.
 3. Test headset recognition and latency with treadmill noise before running hands-free.
 4. Measure runtime delays with the new debug switch and stage timings, then optimize the measured bottleneck.
 5. Add/remove songs and remaining playlist refinements; improve Windows launch/setup packaging.
@@ -287,7 +297,7 @@ To create a local repository from this folder:
 git init
 git add .
 git commit -m "Working push-to-talk YouTube assistant baseline"
-git tag v0.4.1-error-resume-beta
+git tag v0.4.2-controller-connection-beta
 ```
 
 No remote repository is created or pushed by these commands. No project license has been selected; choose one before publishing for reuse.

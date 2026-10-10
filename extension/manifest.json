@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Treadmill Chrome Controller",
-  "version": "1.14.3",
+  "version": "1.15.0",
   "description": "Controls YouTube from a local treadmill assistant.",
   "permissions": [
     "tabs",
     "scripting",
     "activeTab",
-    "storage"
+    "storage",
+    "alarms"
   ],
   "host_permissions": [
     "http://127.0.0.1:8765/*",

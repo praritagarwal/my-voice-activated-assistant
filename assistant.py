@@ -29,6 +29,10 @@ CONFIG = json.loads(CONFIG_SOURCE.read_text(encoding="utf-8"))
 DEBUG_MODE = bool(CONFIG.get("debug_mode", True)) and "--no-debug" not in sys.argv
 COMMANDS: queue.Queue[dict[str, Any]] = queue.Queue()
 APP = Flask(__name__)
+from browser_connection import BrowserConnection, PROTOCOL
+BROWSER = BrowserConnection()
+PENDING = {}
+
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
 LOG_DIR = CONFIG_PATH.parent / "logs"
 if DEBUG_MODE: LOG_DIR.mkdir(exist_ok=True)
@@ -104,13 +108,25 @@ def save_browser_state(request_id: str, phase: str, result: dict[str, Any]) -> d
     return data
 
 
+def enqueue_browser(command, timeout=12):
+    command={**command,"session":BROWSER.session,"expires_at":time.time()+timeout}
+    with RESULT_CONDITION:
+        PENDING[command['request_id']]=command['expires_at']
+    COMMANDS.put(command)
+
+
+def expire_pending(rid):
+    with RESULT_CONDITION:PENDING.pop(rid,None)
+
+
 def browser_snapshot(request_id: str, phase: str, timeout: float = 8.0) -> dict[str, Any]:
     if not DEBUG_MODE: return {"ok": True, "skipped": True}
     snapshot_id = f"{request_id}:{phase}"
-    COMMANDS.put({"tool": "__snapshot", "request_id": snapshot_id})
+    enqueue_browser({"tool": "__snapshot", "request_id": snapshot_id},timeout)
     with RESULT_CONDITION:
         arrived = RESULT_CONDITION.wait_for(lambda: snapshot_id in RESULTS, timeout=timeout)
         result = RESULTS.pop(snapshot_id) if arrived else {"ok": False, "error": "snapshot_timeout"}
+    expire_pending(snapshot_id)
     return save_browser_state(request_id, phase, result)
 
 
@@ -169,34 +185,70 @@ Output: {"tool":"play_playlist","name":"workout"}
 """
 
 
+@APP.get('/health')
+def health():
+    return jsonify({'service':'treadmill-assistant','protocol':PROTOCOL,
+                    'session':BROWSER.session,'connected':BROWSER.connected()})
+
+
+@APP.post('/connect')
+def connect_controller():
+    payload=request.get_json(silent=True) or {}
+    if not isinstance(payload,dict):return jsonify({'ok':False,'error':'invalid_connect'}),400
+    result=BROWSER.connect(payload.get('client_id'),payload.get('protocol'),payload.get('version'))
+    return jsonify(result),200 if result.get('ok') else 409
+
+
+@APP.post('/disconnect')
+def disconnect_controller():
+    payload=request.get_json(silent=True) or {}
+    if not isinstance(payload,dict):return jsonify({'ok':False}),400
+    return jsonify({'ok':BROWSER.disconnect(payload.get('client_id'),payload.get('session'))})
+
+
 @APP.get("/next")
 def next_command():
-    """Return one pending command to the Chrome extension, if any."""
+    client=request.args.get('client_id');session=request.args.get('session')
+    if not BROWSER.touch(client,session):return jsonify({'error':'connection_required'}),409
     try:
-        wait_seconds = min(max(float(request.args.get("wait", 0)), 0), 25)
-        command = COMMANDS.get(timeout=wait_seconds)
-        if command["tool"] != "__snapshot":
-            log_event(command["request_id"], "browser_dispatched", tool=command["tool"])
-        return jsonify(command)
-    except queue.Empty:
-        return jsonify({})
-    except (ValueError, TypeError):
-        return jsonify({"error": "Invalid wait parameter"}), 400
+        wait_seconds=min(max(float(request.args.get('wait',0)),0),20)
+        deadline=time.monotonic()+wait_seconds
+        while True:
+            command=COMMANDS.get(timeout=max(0,deadline-time.monotonic()))
+            rid=command['request_id']
+            with RESULT_CONDITION:
+                pending=rid in PENDING
+            if not pending or command.get('session')!=BROWSER.session or time.time()>=command['expires_at']:
+                with RESULT_CONDITION:
+                    if pending:
+                        RESULTS[rid]={'ok':False,'error':'command_expired'}
+                        PENDING.pop(rid,None);RESULT_CONDITION.notify_all()
+                if time.monotonic()>=deadline:return jsonify({})
+                continue
+            if not BROWSER.authorised(client,session):
+                COMMANDS.put(command)
+                return jsonify({'error':'connection_required'}),409
+            if command['tool']!='__snapshot':log_event(rid,'browser_dispatched',tool=command['tool'])
+            return jsonify(command)
+    except queue.Empty:return jsonify({})
+    except (ValueError,TypeError):return jsonify({'error':'invalid_wait'}),400
 
 
 @APP.post("/result")
 def receive_result():
-    payload = request.get_json(silent=True)
-    if not isinstance(payload, dict) or not isinstance(payload.get("request_id"), str) or not isinstance(payload.get("result"), dict):
-        return jsonify({"error":"invalid result"}), 400
-    rid = payload["request_id"]
-    result = payload["result"]
-    if not rid.endswith(":before") and not rid.endswith(":after"):
-        log_event(rid, "browser_result", result=result)
+    payload=request.get_json(silent=True)
+    if not isinstance(payload,dict) or not isinstance(payload.get('request_id'),str) or not isinstance(payload.get('result'),dict):
+        return jsonify({'error':'invalid_result'}),400
+    if not BROWSER.authorised(payload.get('client_id'),payload.get('session')):
+        return jsonify({'error':'connection_required'}),409
+    rid=payload['request_id'];result=payload['result']
     with RESULT_CONDITION:
-        RESULTS[rid] = result
-        RESULT_CONDITION.notify_all()
-    return jsonify({"ok": True})
+        expires=PENDING.pop(rid,None)
+        if expires is None:return jsonify({'error':'stale_result'}),409
+        if time.time()>=expires:result={'ok':False,'error':'command_expired'}
+        RESULTS[rid]=result;RESULT_CONDITION.notify_all()
+    if not rid.endswith(':before') and not rid.endswith(':after'):log_event(rid,'browser_result',result=result)
+    return jsonify({'ok':True})
 
 
 # Extract explicit video indices independently of the LLM. No additional dependencies.
@@ -417,10 +469,12 @@ def start_local_server() -> None:
 def browser_request(command, timeout=12):
     command = {**command, "request_id": command.get("request_id", str(uuid.uuid4()))}
     rid = command["request_id"]
-    COMMANDS.put(command)
+    enqueue_browser(command,timeout)
     with RESULT_CONDITION:
         arrived = RESULT_CONDITION.wait_for(lambda: rid in RESULTS, timeout=timeout)
-        return RESULTS.pop(rid) if arrived else None
+        result=RESULTS.pop(rid) if arrived else None
+        PENDING.pop(rid,None)
+        return result
 
 
 def main() -> None:
@@ -444,13 +498,18 @@ def main() -> None:
     server = threading.Thread(target=start_local_server, daemon=True)
     server.start()
 
-    print("Treadmill Assistant ready.")
-    print("Open the extension controller tab via the Chrome toolbar icon.")
+    print("Assistant starting; connecting browser.")
+    print("Chrome extension opens the Controller automatically; keep Chrome running.")
     print("Keep the controller tab open; switch back to YouTube to browse.")
     print("Input mode:", "wake phrase" if wake else "F8 push-to-talk" if voice else "typed")
     print("Debug diagnostics:", "on" if DEBUG_MODE else "off")
     print("Press Ctrl+C to exit.\n")
 
+    print('Waiting for browser Controller connection (automatic discovery may take about 30 seconds)...',flush=True)
+    try:
+        while not BROWSER.wait(1):pass
+    except KeyboardInterrupt:return
+    print('Browser connected. Treadmill Assistant ready.',flush=True)
     if voice:
         voice.speak(f'Wake input loaded. Keep the Controller tab open. Say {wake.phrase}, wait for the beep, then speak.' if wake else 'Voice input loaded. Keep the Controller tab open. Hold F8 to speak while stationary.')
     while True:
@@ -479,6 +538,10 @@ def main() -> None:
             if not pause_state or not pause_state.get('ok'):
                 print('Wake pause unavailable; continuing command capture.', flush=True)
         try:
+            if not BROWSER.connected():
+                print('Browser disconnected; waiting to reconnect...',flush=True)
+                while not BROWSER.wait(1):pass
+                print('Browser reconnected.',flush=True)
             if voice:
                 user_text, timing = wake.listen(voice, on_wake=pause_for_command) if wake else voice.listen()
                 if user_text:
@@ -505,7 +568,7 @@ def main() -> None:
             print("Tool call:", json.dumps(command, indent=2))
             stage_start = time.monotonic()
             command["request_id"] = rid
-            COMMANDS.put(command)
+            enqueue_browser(command)
             if voice:
                 from interaction import ConcurrentSpeech
                 from voice_io import action_announcement
@@ -513,6 +576,7 @@ def main() -> None:
             with RESULT_CONDITION:
                 arrived = RESULT_CONDITION.wait_for(lambda: rid in RESULTS, timeout=12)
                 result = RESULTS.pop(rid) if arrived else None
+                PENDING.pop(rid,None)
             stages["browser_action_s"] = round(time.monotonic()-stage_start,3)
             stages["transcript_to_browser_result_s"] = round(time.monotonic()-pipeline_start,3)
             if "wake_to_transcript_s" in stages:

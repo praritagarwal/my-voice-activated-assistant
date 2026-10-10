@@ -4,6 +4,25 @@ const SERVER = 'http://127.0.0.1:8765';
 const status = document.getElementById('status');
 const history = document.getElementById('history');
 let running = true;
+const clientId=crypto.randomUUID();
+let session=null;
+let connecting=false;
+let heartbeatTimer;
+async function heartbeat(){
+  if(!running || connecting)return;
+  connecting=true;
+  try{
+    const response=await fetch(`${SERVER}/connect`,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({client_id:clientId,protocol:2,version:chrome.runtime.getManifest().version}),
+      signal:AbortSignal.timeout(3000)});
+    const result=await response.json();
+    if(!response.ok || !result.ok){session=null;status.textContent='Connection unavailable: '+(result.error || response.status);return;}
+    if(session!==result.session)log('Connected to assistant session');
+    session=result.session;
+    status.textContent='Connected to local assistant';
+  }catch(_){session=null;status.textContent='Disconnected — reconnecting automatically';}
+  finally{connecting=false;}
+}
 const numberingCheckbox = document.getElementById('numbering');
 chrome.storage.local.get({treadmill_numbering_enabled:true}, settings => {
   numberingCheckbox.checked = settings.treadmill_numbering_enabled !== false;
@@ -233,7 +252,7 @@ async function report(command, result) {
   try {
     await fetch(`${SERVER}/result`, {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({request_id:command.request_id, result})
+      body:JSON.stringify({request_id:command.request_id, result,client_id:clientId,session:command.session})
     });
   } catch (e) { log('Could not report result: ' + e.message); }
 }
@@ -242,11 +261,18 @@ async function pollForever() {
   while (running) {
     try {
       // Long polling: Flask waits for a command, avoiding a busy 1-second timer.
-      const response = await fetch(`${SERVER}/next?wait=20`, {cache: 'no-store'});
+      if(!session){await heartbeat();if(!session){await sleep(1000);continue;}}
+      const pollingSession=session;
+      const response = await fetch(`${SERVER}/next?wait=20&client_id=${encodeURIComponent(clientId)}&session=${encodeURIComponent(pollingSession)}`, {cache: 'no-store',signal:AbortSignal.timeout(25000)});
+      if(response.status===409){session=null;await heartbeat();continue;}
       if (!response.ok) throw new Error(`Server returned HTTP ${response.status}`);
       status.textContent = 'Connected to local assistant';
       const command = await response.json();
       if (command.tool) {
+        if(command.session!==session || Date.now()/1000>=command.expires_at){
+          log('Discarded stale command');
+          await report(command,{ok:false,error:'command_expired'});continue;
+        }
         try {
           const result = await execute(command);
           log(`${result.ok ? 'Executed' : 'Failed'}: ${JSON.stringify({command,result})}`);
@@ -264,7 +290,10 @@ async function pollForever() {
   }
 }
 
-window.addEventListener('pagehide', () => { running = false; });
+window.addEventListener('pagehide', () => { running = false;clearInterval(heartbeatTimer);
+  if(session)navigator.sendBeacon(`${SERVER}/disconnect`,new Blob([JSON.stringify({client_id:clientId,session})],{type:'application/json'})); });
+heartbeatTimer=setInterval(heartbeat,3000);
+heartbeat();
 pollForever();
 
 const continueButton=document.getElementById('continue-video');
