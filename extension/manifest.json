@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "Treadmill Chrome Controller",
+  "version": "1.14.0",
+  "description": "Controls YouTube from a local treadmill assistant.",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "activeTab",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8765/*",
+    "https://www.youtube.com/*",
+    "<all_urls>"
+  ],
+  "action": {
+    "default_title": "Open Treadmill Controller"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Treadmill Controller</title>
+  <style>
+    body {font: 15px system-ui, sans-serif; max-width: 620px; margin: 3rem auto; padding: 0 1rem;}
+    #status {font-weight: 600;} code {background: #eee; padding: .15rem .3rem;}
+    #history {white-space: pre-wrap; background: #f6f6f6; padding: 1rem; min-height: 5rem;}
+  </style>
+</head>
+<body>
+  <h1>Treadmill Controller</h1>
+  <p id="status">Connecting to local assistant…</p>
+  <p>Leave this tab <strong>open</strong> while using the assistant. You can switch back to YouTube; DevTools is not needed.</p>
+  <p>Start <code>python assistant.py</code> in Anaconda Prompt. Commands target the most recently active YouTube tab, or open a YouTube search in your Chrome window.</p>
+  <p><label><input type="checkbox" id="numbering" checked> Show video numbers on YouTube</label></p>
+  <h2>Recent activity</h2>
+  <div id="history" role="log" aria-live="polite"></div>
+  <script src="controller.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+# Local environments and generated Python files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+# Machine-specific configuration and diagnostics
+config.json
+logs/
+# Optional local model caches
+models/
+.cache/
+# Editor / OS artifacts
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+# Generated distributions
+*.zip
