@@ -27,7 +27,8 @@
       "target_dbfs": -24,
       "max_gain_db": 18,
       "minimum_dbfs": -60
-    }
+    },
+    "model_dir": "models/voice"
   },
   "debug_mode": true
 }

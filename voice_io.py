@@ -5,6 +5,10 @@ import time
 
 class VoiceIO:
     def __init__(self, config):
+        from local_models import local_model_path, enable_offline_loading
+        asr_path=local_model_path(config,'whisper')
+        tts_path=local_model_path(config,'kitten') if config.get('tts_enabled',True) else None
+        enable_offline_loading()
         import numpy as np
         import sounddevice as sd
         from faster_whisper import WhisperModel
@@ -12,13 +16,13 @@ class VoiceIO:
         self.np, self.sd, self.keyboard = np, sd, keyboard
         self.config = config
         self.tts = None
-        print('Loading Whisper tiny.en (first run downloads weights)...')
-        self.asr = WhisperModel(config.get('asr_model', 'tiny.en'), device='cpu', compute_type='int8', cpu_threads=4)
+        print('Loading local Whisper:', asr_path)
+        self.asr = WhisperModel(str(asr_path), device='cpu', compute_type='int8', cpu_threads=4, local_files_only=True)
         if config.get('tts_enabled', True):
             try:
                 from kittenml import KittenTTS
-                print('Loading KittenTTS (first run downloads weights)...')
-                self.tts = KittenTTS(config.get('tts_model', 'KittenML/kitten-tts-nano-0.8-int8'))
+                print('Loading local KittenTTS:', tts_path)
+                self.tts = KittenTTS(str(tts_path))
             except Exception as exc:
                 print(f'TTS unavailable: {exc}. Voice input remains available.')
 

@@ -458,6 +458,19 @@ def main() -> None:
         pause_state = None
         command = None
         announcement = None
+        result = None
+        def release_wake_pause():
+            nonlocal pause_state
+            if not pause_state or not pause_state.get('was_playing'):return
+            from interaction import should_restore
+            try:
+                restored = browser_request({"tool":"__wake_release", "token":rid,
+                    "tab_id":pause_state.get('tab_id'), "restore":should_restore(command,result)}, timeout=3)
+                print('Wake pause cleanup:',json.dumps(restored or {'ok':False,'error':'controller_timeout'}),flush=True)
+                if restored and restored.get('ok'):pause_state=None
+                else:print('Wake pause cleanup unavailable; check playback.',flush=True)
+            except Exception as exc:
+                print('Wake pause cleanup failed:',exc,flush=True)
         def pause_for_command():
             nonlocal pause_state
             pause_state = browser_request({"tool":"__wake_pause", "token":rid,
@@ -505,6 +518,8 @@ def main() -> None:
             if "wake_to_transcript_s" in stages:
                 stages["wake_to_browser_result_s"] = round(stages["wake_to_transcript_s"] + stages["transcript_to_browser_result_s"],3)
             print("Action timing:", json.dumps(stages), flush=True)
+            if result is None or not result.get('ok'):
+                release_wake_pause()
             if announcement:
                 announcement.finish()
                 stages["announcement_s"] = announcement.seconds
@@ -575,26 +590,24 @@ def main() -> None:
         except requests.RequestException as error:
             print(f"Ollama connection error: {error}")
             log_event(rid, "llm_error", error=str(error))
+            release_wake_pause()
             if voice: voice.speak("I could not process that command. Check the terminal.")
         except (ValueError, KeyError, TypeError) as error:
             print(f"Command error: {error}")
             log_event(rid, "llm_error", error=str(error))
+            release_wake_pause()
             if voice: voice.speak("I could not process that command. Check the terminal.")
         except Exception as error:
             if not voice: raise
             print(f'Voice error: {error}')
             log_event(rid, 'voice_error', error=str(error))
+            release_wake_pause()
             voice.speak('Voice input failed. Check the terminal.')
             break
         finally:
             if announcement:
                 announcement.finish()
-            if pause_state and pause_state.get('was_playing'):
-                from interaction import should_restore
-                restored = browser_request({"tool":"__wake_release", "token":rid,
-                    "tab_id":pause_state.get('tab_id'), "restore":should_restore(command)}, timeout=2)
-                if not restored or not restored.get('ok'):
-                    print('Wake pause cleanup unavailable; check playback.', flush=True)
+            release_wake_pause()
 
 
 if __name__ == "__main__":

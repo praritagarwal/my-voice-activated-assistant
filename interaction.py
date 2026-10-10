@@ -3,8 +3,9 @@ import threading
 import time
 
 
-def should_restore(command):
-    if command is None:return True
+def should_restore(command, result):
+    # Only a successful playback-changing action takes ownership of the pause.
+    if command is None or not result or not result.get('ok'):return True
     tool=command.get('tool')
     if tool in ('resume_current','play_video','play_playlist','youtube_search','show_playlists','open_playlists'):return False
     if tool=='media_control' and command.get('action') in ('pause','play'):return False

@@ -1,6 +1,6 @@
 # Treadmill Browser Assistant
 
-A local voice/typed assistant for controlling YouTube in Chrome. Current revision: **0.3.5-direct-media**, extending the verified **0.1.0-ptt** baseline. Voice recognition uses Whisper tiny.en (faster-whisper CPU int8); command interpretation uses Ollama Qwen3-1.7B; short spoken announcements use the lightweight KittenTTS nano int8 model.
+A local voice/typed assistant for controlling YouTube in Chrome. Current revision: **0.4.1-error-resume-beta**, extending the verified **0.1.0-ptt** baseline. Voice recognition uses Whisper tiny.en (faster-whisper CPU int8); command interpretation uses Ollama Qwen3-1.7B; short spoken announcements use the lightweight KittenTTS nano int8 model.
 
 This revision adds experimental local **Hey Jarvis** activation. Start with stationary tests, including background YouTube audio, before treadmill testing. F8 push-to-talk remains available for stationary fallback.
 
@@ -8,7 +8,7 @@ This revision adds experimental local **Hey Jarvis** activation. Start with stat
 
 Wake pause now uses a direct injected playback operation, verifies the paused state, and prints `Wake pause result` with the target tab URL or failure reason. This bypasses stale content-script message handlers.
 
-On wake detection, the assistant asks YouTube to pause its current playing video before the cue and command capture. This requires a connected Controller tab and does not improve wake detection itself. Playback restores after the interaction for volume, scroll, shuffle, seek or cancelled/error commands, only if the original video and page still match. Explicit play/pause, next/previous, selecting a video/playlist and navigation take ownership of playback and suppress automatic resume, including failed or timed-out actions. A 60-second browser fallback restores a matching paused video if the assistant disconnects before cleanup.
+On wake detection, the assistant asks YouTube to pause its current playing video before the cue and command capture. This requires a connected Controller tab and does not improve wake detection itself. Playback restores after the interaction for volume, scroll, shuffle, seek or cancelled/error commands, only if the original video and page still match. Explicit play/pause, next/previous, selecting a video/playlist and navigation take ownership of playback and suppress automatic resume, only after successful actions; failed or timed-out commands restore the original matching video. A 60-second browser fallback restores a matching paused video if the assistant disconnects before cleanup.
 
 Browser commands are queued before spoken announcements start on a separate thread. Speech and browser execution overlap; the microphone reopens only after speech finishes. An announcement describes the intended action; browser errors are spoken afterward. Existing diagnostic timings distinguish browser completion from speech completion.
 
@@ -21,6 +21,26 @@ Reload the extension in chrome://extensions, refresh YouTube and reopen the Cont
 ## Direct playback fix
 
 Direct continue/resume phrases skip optional before/after snapshots even in debug mode. Play, pause and seek use an injected browser operation independent of the content script, and verify play/pause state. Navigation and numbering still use the content script. Reload extension 1.14.3 and reopen the Controller tab. `--no-debug` also disables optional snapshots for other commands.
+
+## Productionization stage 1: explicit local model loading
+
+Keep personal config.json and existing models. No new config keys are required; voice.model_dir defaults to models/voice relative to this project. In your activated Conda environment, run:
+
+```bat
+python setup_models.py
+python setup_models.py --check
+python assistant.py --wake --no-debug
+```
+
+Setup is the only voice-model download step. It prepares Whisper tiny.en, the configured KittenTTS ONNX nano model, and the existing Hey Jarvis wake files. Existing Hugging Face caches can be reused by the downloader; a one-time anonymous-download warning during setup is possible. `--check` only validates local files and makes no downloads. `--voice-only` omits wake model setup/check. Explicit sherpa users still use setup_wake.py.
+
+Normal voice startup requires prepared files and loads local folders in offline mode. Missing files or changed model IDs produce a setup instruction instead of a silent download. Set tts_enabled=false to run without preparing KittenTTS. These checks verify required file presence, not model integrity. Normal startup needs no Hugging Face connection; YouTube still needs internet and Ollama must remain available locally.
+
+Do not commit models/ or config.json. Automatic Controller startup, connection recovery and a Windows installer are subsequent stages, not included here. Model downloads and physical Windows inference have not been exercised in this build environment; verify on your current Conda install before committing this stage.
+
+## Error cleanup
+
+Temporary wake pauses now restore after browser errors, timeouts, command interpretation errors or cancelled capture. Cleanup runs before error speech for known failures and again on final exit if needed. Successful pause/play, selection, next/previous or navigation still owns playback. The browser only restores the original matching page/player/source, so failed navigation cannot accidentally start another video. A disconnected Controller can prevent immediate cleanup; the terminal reports that limitation.
 
 ## Current capabilities
 
@@ -82,7 +102,7 @@ Gain is applied before openWakeWord and to captured command audio before Whisper
 
 The existing openWakeWord model files from the comparison script are reused. No custom-model training is needed. Supplied pretrained openWakeWord wake models are CC BY-NC-SA 4.0; the framework code is Apache-2.0. This ZIP does not bundle model weights or change your repository's license.
 
-Validation: 23 logic tests pass, including effective gain measurements, recognition-independent boosting, gain limits, below-floor gating, silence, clipping protection, PCM conversion and disabled gain. Python compilation and extension syntax checks pass. Five mocked browser pause/resume scenarios passed (restore, explicit playback ownership, already paused, changed video and expired pause). Acoustic improvements and false-trigger rate have not been measured; run the comparison on your headset before committing this as a working release.
+Validation: 32 logic tests pass, including effective gain measurements, recognition-independent boosting, gain limits, below-floor gating, silence, clipping protection, PCM conversion and disabled gain. Python compilation and extension syntax checks pass. Five mocked browser pause/resume scenarios passed (restore, explicit playback ownership, already paused, changed video and expired pause). Acoustic improvements and false-trigger rate have not been measured; run the comparison on your headset before committing this as a working release.
 
 ## Requirements
 
@@ -267,7 +287,7 @@ To create a local repository from this folder:
 git init
 git add .
 git commit -m "Working push-to-talk YouTube assistant baseline"
-git tag v0.3.5-direct-media
+git tag v0.4.1-error-resume-beta
 ```
 
 No remote repository is created or pushed by these commands. No project license has been selected; choose one before publishing for reuse.
