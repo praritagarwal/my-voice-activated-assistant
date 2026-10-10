@@ -23,8 +23,9 @@ import base64
 import shutil
 from datetime import datetime, timezone
 
-CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
-CONFIG_SOURCE = CONFIG_PATH if CONFIG_PATH.exists() else CONFIG_PATH.with_name("config.example.json")
+from runtime_paths import data_root, config_source
+CONFIG_PATH = data_root() / "config.json"
+CONFIG_SOURCE = config_source()
 CONFIG = json.loads(CONFIG_SOURCE.read_text(encoding="utf-8"))
 DEBUG_MODE = bool(CONFIG.get("debug_mode", True)) and "--no-debug" not in sys.argv
 COMMANDS: queue.Queue[dict[str, Any]] = queue.Queue()

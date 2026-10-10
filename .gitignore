@@ -16,3 +16,9 @@ models/
 Thumbs.db
 # Generated distributions
 *.zip
+
+# Launcher registration and build output
+launcher_python.txt
+build/
+dist/
+*.spec

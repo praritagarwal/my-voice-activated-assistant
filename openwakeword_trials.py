@@ -7,7 +7,8 @@ import time
 import urllib.request
 import shutil
 
-ROOT = Path(__file__).resolve().parent
+from runtime_paths import data_root, config_source
+ROOT = data_root()
 MODEL_DIR = ROOT/'models'/'openwakeword'
 URL_ROOT = 'https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/'
 MODEL_FILES = ['hey_jarvis_v0.1.onnx','melspectrogram.onnx','embedding_model.onnx']
@@ -72,8 +73,7 @@ def main():
     import numpy as np
     import sounddevice as sd
     from openwakeword.model import Model
-    path=ROOT/'config.json'
-    if not path.exists(): path=ROOT/'config.example.json'
+    path=config_source()
     config=json.loads(path.read_text(encoding='utf-8'))['voice'] if path.exists() else {}
     model=Model(wakeword_models=[str(MODEL_DIR/MODEL_FILES[0])],inference_framework='onnx',
                 melspec_model_path=str(MODEL_DIR/MODEL_FILES[1]),embedding_model_path=str(MODEL_DIR/MODEL_FILES[2]),ncpu=1)

@@ -1,6 +1,6 @@
 # Treadmill Browser Assistant
 
-A local voice/typed assistant for controlling YouTube in Chrome. Current revision: **0.4.2-controller-connection-beta**, extending the verified **0.1.0-ptt** baseline. Voice recognition uses Whisper tiny.en (faster-whisper CPU int8); command interpretation uses Ollama Qwen3-1.7B; short spoken announcements use the lightweight KittenTTS nano int8 model.
+A local voice/typed assistant for controlling YouTube in Chrome. Current revision: **0.5.3-first-run-setup-beta**, extending the verified **0.1.0-ptt** baseline. Voice recognition uses Whisper tiny.en (faster-whisper CPU int8); command interpretation uses Ollama Qwen3-1.7B; short spoken announcements use the lightweight KittenTTS nano int8 model.
 
 This revision adds experimental local **Hey Jarvis** activation. Start with stationary tests, including background YouTube audio, before treadmill testing. F8 push-to-talk remains available for stationary fallback.
 
@@ -20,7 +20,7 @@ Reload the extension in chrome://extensions, refresh YouTube and reopen the Cont
 
 ## Direct playback fix
 
-Direct continue/resume phrases skip optional before/after snapshots even in debug mode. Play, pause and seek use an injected browser operation independent of the content script, and verify play/pause state. Navigation and numbering still use the content script. Reload extension 1.15.0 once; the Controller then opens automatically. `--no-debug` also disables optional snapshots for other commands.
+Direct continue/resume phrases skip optional before/after snapshots even in debug mode. Play, pause and seek use an injected browser operation independent of the content script, and verify play/pause state. Navigation and numbering still use the content script. Reload extension 1.15.1 once; the Controller then opens automatically. `--no-debug` also disables optional snapshots for other commands.
 
 ## Productionization stage 1: explicit local model loading
 
@@ -44,13 +44,50 @@ Temporary wake pauses now restore after browser errors, timeouts, command interp
 
 ## Productionization stage 2: Controller startup and recovery
 
-Reload extension version 1.15.0 once, close old Controller tabs, and keep Chrome running. Run the assistant as usual. The extension discovers the local server and opens or reuses a background Controller tab. Discovery uses a Chrome alarm and may take about 30 seconds or longer if Chrome delays the alarm. The toolbar icon still opens the tab immediately. This stage does not launch a closed Chrome browser.
+Reload extension version 1.15.1 once, close old Controller tabs, and keep Chrome running. Run the assistant as usual. The extension discovers the local server and opens or reuses a background Controller tab. Discovery uses a Chrome alarm and may take about 30 seconds or longer if Chrome delays the alarm. The toolbar icon still opens the tab immediately. This stage does not launch a closed Chrome browser.
 
 Python waits for the Controller handshake before accepting commands and prints Browser connected. The Controller sends heartbeats every three seconds and reconnects after server interruptions. Command polls also refresh the connection, with a 45-second lease to tolerate background timer throttling. Closing the tab sends a best-effort disconnect notice. The tab is marked not automatically discardable. Python waits between interactions when the heartbeat expires. Only one Controller has an active lease; duplicate tabs cannot drain the command queue. Each Python start has a new session ID. Expired queued commands and results from old sessions are rejected and are never replayed on reconnect. An already-running action cannot be cancelled by this protocol.
 
 If connection is lost during an interaction, the action times out and playback cleanup is attempted. The existing matching-video timeout fallback remains best-effort; successful explicit playback commands cancel that fallback. A connection outage can still prevent immediate playback restoration. No microphone command processing starts before the initial browser handshake. User microphone and TTS settings are unchanged.
 
 New API: /health, /connect and session-aware /next and /result. Older extension versions need updating before they can connect. Chrome must have the extension installed in the profile you open. The default server port remains 8765; a custom Python port still needs matching extension configuration.
+
+## First-run setup window
+
+The Controller opens YouTube on connection if no YouTube tab exists, including when Chrome was already running. Existing YouTube tabs are reused.
+
+Double-click Sitara.exe. If voice models are missing, a first-run window lets you import your existing treadmill_assistant project folder or explicitly download models. Import copies your prepared files and personal settings, then continues startup. An untouched default config created by an earlier first launch no longer blocks import. Personal destination settings or existing model folders are protected from overwriting. Download progress appears in the console. Chrome/Ollama and the extension still need their initial installation as described below.
+
+## Windows build compatibility
+
+The build uses packaging_hooks/hook-webrtcvad.py to collect metadata from webrtcvad-wheels (the installed distribution) while bundling the webrtcvad/_webrtcvad modules. This overrides the standard hook that assumes the older distribution name. ONNX Runtime collection includes runtime binaries/data and excludes optional quantization tools, which the assistant never calls. Re-run build_windows.bat after this update; no runtime dependency changes are required.
+
+## Application icon
+
+The Windows build embeds assets/sitara.ico, a microphone and star design with transparent outer corners. It contains 16, 24, 32, 48, 64, 128 and 256 pixel variants. The editable SVG and PNG master are included. Rebuild with build_windows.bat to embed the icon; existing EXEs are not changed by copying the icon file. Windows may cache icons for existing shortcuts. The console window may still use the Windows terminal icon.
+
+## Windows launcher and build
+
+For double-click startup using your existing Conda installation, register the working interpreter once:
+
+```bat
+python register_launcher.py
+```
+
+Then double-click Start_Sitara.bat. It validates local voice files, checks/starts local Ollama when available, opens Chrome/YouTube if Chrome is not already running, and runs wake mode with debug off. Ollama and Chrome remain separate installed applications. Close the assistant with Ctrl+C. `--debug` enables diagnostics; `--voice` selects F8 mode. Existing source config and models stay in the checkout.
+
+To build a standalone Python runtime, run build_windows.bat from the working Python 3.11 Conda prompt. It installs PyInstaller and builds dist/Sitara/Sitara.exe and dist/Sitara-Windows.zip. No Python or Conda is needed to RUN the built package. This is a folder-based executable beta, not an installer; keep the entire folder together. The build includes only the verified ONNX TTS / openWakeWord path, excluding the large KittenTTS 2/PyTorch backend and optional sherpa backend. Windows native dependency loading still needs a real build and runtime smoke test.
+
+The packaged app keeps writable data in %LOCALAPPDATA%/Sitara. Import your prepared settings and models once on a fresh installation:
+
+```bat
+Sitara.exe --import-data "C:\path\to\treadmill_assistant"
+Sitara.exe --check-models
+```
+
+Import refuses to overwrite existing settings/models. Alternatively use `Sitara.exe --setup-models` to download models for a fresh setup. Subsequent launches use local files offline. Install the packaged extension/ folder in Chrome once; remove/disable the old copy to avoid competing Controllers. The launcher opens the default Chrome profile; use `--no-chrome` and open the intended profile manually if needed.
+
+Personal config, models, logs and registered interpreter paths are excluded from the distribution ZIP. Build in the existing verified environment first; a clean-environment build is a subsequent verification task. This package does not install Ollama, download its LLM automatically, or install the Chrome extension automatically. Neither a Windows executable nor a Windows runtime test has been produced by this Linux build environment.
 
 ## Current capabilities
 
@@ -112,7 +149,7 @@ Gain is applied before openWakeWord and to captured command audio before Whisper
 
 The existing openWakeWord model files from the comparison script are reused. No custom-model training is needed. Supplied pretrained openWakeWord wake models are CC BY-NC-SA 4.0; the framework code is Apache-2.0. This ZIP does not bundle model weights or change your repository's license.
 
-Validation: 46 Python tests pass, including connection/API expiry, duplicate Controllers and server restart checks; three mocked automatic Controller startup scenarios also pass, including effective gain measurements, recognition-independent boosting, gain limits, below-floor gating, silence, clipping protection, PCM conversion and disabled gain. Python compilation and extension syntax checks pass. Five mocked browser pause/resume scenarios passed (restore, explicit playback ownership, already paused, changed video and expired pause). Acoustic improvements and false-trigger rate have not been measured; run the comparison on your headset before committing this as a working release.
+Validation: 59 Python tests pass, including connection/API expiry, duplicate Controllers and server restart checks; three mocked automatic Controller startup scenarios also pass, including effective gain measurements, recognition-independent boosting, gain limits, below-floor gating, silence, clipping protection, PCM conversion and disabled gain. Python compilation and extension syntax checks pass. Five mocked browser pause/resume scenarios passed (restore, explicit playback ownership, already paused, changed video and expired pause). Acoustic improvements and false-trigger rate have not been measured; run the comparison on your headset before committing this as a working release.
 
 ## Requirements
 
@@ -297,7 +334,7 @@ To create a local repository from this folder:
 git init
 git add .
 git commit -m "Working push-to-talk YouTube assistant baseline"
-git tag v0.4.2-controller-connection-beta
+git tag v0.5.3-first-run-setup-beta
 ```
 
 No remote repository is created or pushed by these commands. No project license has been selected; choose one before publishing for reuse.

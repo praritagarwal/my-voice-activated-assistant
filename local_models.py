@@ -3,7 +3,8 @@ import json
 import os
 from pathlib import Path
 
-ROOT=Path(__file__).resolve().parent
+from runtime_paths import data_root
+ROOT=data_root()
 
 
 def voice_sources(config):
@@ -42,7 +43,9 @@ def local_model_path(config,kind):
             raise ValueError('Configured model differs from prepared model')
         check_folder(kind,folder)
     except (OSError,ValueError,KeyError,TypeError) as exc:
-        raise RuntimeError(f'Local {kind} model not ready: {exc}. Run python setup_models.py in this environment.') from exc
+        import sys
+        command='Sitara.exe --setup-models' if getattr(sys,'frozen',False) else 'python setup_models.py'
+        raise RuntimeError(f'Local {kind} model not ready: {exc}. Run {command}.') from exc
     return folder.resolve()
 
 

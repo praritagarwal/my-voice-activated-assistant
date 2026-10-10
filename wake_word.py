@@ -2,7 +2,8 @@
 from pathlib import Path
 import time
 
-ROOT = Path(__file__).resolve().parent
+from runtime_paths import data_root, config_source
+ROOT = data_root()
 MODEL_NAME = 'sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01'
 MODEL_DIR = ROOT / 'models' / MODEL_NAME
 SUFFIX = 'epoch-12-avg-2-chunk-16-left-64.int8.onnx'

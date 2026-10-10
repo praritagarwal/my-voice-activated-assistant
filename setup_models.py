@@ -6,8 +6,8 @@ from local_models import ROOT, voice_sources, model_root, local_model_path, chec
 
 
 def load_config():
-    path=ROOT/'config.json'
-    if not path.exists():path=ROOT/'config.example.json'
+    from runtime_paths import config_source
+    path=config_source()
     return json.loads(path.read_text(encoding='utf-8')).get('voice',{})
 
 

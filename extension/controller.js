@@ -17,7 +17,11 @@ async function heartbeat(){
       signal:AbortSignal.timeout(3000)});
     const result=await response.json();
     if(!response.ok || !result.ok){session=null;status.textContent='Connection unavailable: '+(result.error || response.status);return;}
-    if(session!==result.session)log('Connected to assistant session');
+    if(session!==result.session){
+      log('Connected to assistant session');
+      const tabs=await chrome.tabs.query({});
+      if(!tabs.some(isYoutube))await chrome.tabs.create({url:'https://www.youtube.com/',active:true});
+    }
     session=result.session;
     status.textContent='Connected to local assistant';
   }catch(_){session=null;status.textContent='Disconnected — reconnecting automatically';}
