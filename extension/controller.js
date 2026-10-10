@@ -82,8 +82,82 @@ async function waitForScrollToSettle(tabId, timeoutMs = 2500) {
   return {settled:false,scroll_y:previous,reason:'scroll_settle_timeout'};
 }
 
+// Inject a small playback operation directly, independent of content-script version.
+function wakePlayback(command) {
+  const pauses = window.__treadmillWakePauses || (window.__treadmillWakePauses = new Map());
+  if (command.tool === '__wake_pause') {
+    if(Date.now()/1000 > command.expires_at)return {ok:false,error:'wake_pause_expired'};
+    const video=document.querySelector('video.html5-main-video') || document.querySelector('video');
+    if(!video)return {ok:false,error:'no_video_player',url:location.href};
+    const wasPlaying=!video.paused && !video.ended;
+    if(wasPlaying){
+      const state={video,url:location.href,src:video.currentSrc};
+      video.pause();
+      state.timer=setTimeout(()=>{
+        if(pauses.get(command.token)!==state)return;
+        pauses.delete(command.token);
+        if(location.href===state.url && video.isConnected && video.currentSrc===state.src && video.paused)
+          video.play().catch(()=>{});
+      },60000);
+      pauses.set(command.token,state);
+    }
+    return {ok:video.paused,was_playing:wasPlaying,paused:video.paused,url:location.href,
+            error:video.paused ? undefined : 'pause_not_verified'};
+  }
+  const state=pauses.get(command.token);
+  if(!state)return {ok:true,restored:false};
+  clearTimeout(state.timer);pauses.delete(command.token);
+  if(command.restore && location.href===state.url && state.video.isConnected &&
+      state.video.currentSrc===state.src && state.video.paused){
+    return state.video.play().then(()=>({ok:!state.video.paused,restored:!state.video.paused}))
+      .catch(e=>({ok:false,error:'playback_blocked',detail:String(e)}));
+  }
+  return {ok:true,restored:false};
+}
+
 async function execute(command) {
+  if(command.tool==='resume_current')command={...command,tool:'media_control',action:'play'};
+  if (command.tool === 'media_control') {
+    const tab=await chooseTargetTab();
+    if(!tab?.id)return {ok:false,error:'no_youtube_tab'};
+    try {
+      const responses=await chrome.scripting.executeScript({target:{tabId:tab.id},args:[command.action],func:async action=>{
+        const video=document.querySelector('video.html5-main-video') || document.querySelector('video');
+        if(!video)return {ok:false,error:'no_video_player',url:location.href};
+        if(['play','pause'].includes(action)){
+          for(const state of (window.__treadmillWakePauses || new Map()).values())clearTimeout(state.timer);
+        }
+        try {
+          if(action==='play')await video.play();
+          else if(action==='pause')video.pause();
+          else if(action==='seek_forward')video.currentTime+=10;
+          else if(action==='seek_backward')video.currentTime=Math.max(0,video.currentTime-10);
+          else return {ok:false,error:'unknown_media_action'};
+          const ok=action==='play' ? !video.paused : action==='pause' ? video.paused : true;
+          return {ok,paused:video.paused,url:location.href,detail:'Media control '+action,
+                  error:ok ? undefined : 'playback_not_verified'};
+        } catch(e){return {ok:false,error:'playback_failed',detail:String(e)};}
+      }});
+      return {...(responses[0]?.result || {ok:false,error:'empty_media_response'}),tab_id:tab.id};
+    }catch(e){return {ok:false,error:'media_injection_failed',detail:String(e)};}
+  }
+  if (command.tool === '__wake_pause' || command.tool === '__wake_release') {
+    const tab=command.tab_id ? {id:command.tab_id} : await chooseTargetTab();
+    if(!tab?.id)return {ok:false,error:'no_youtube_tab'};
+    try {
+      const responses=await chrome.scripting.executeScript({target:{tabId:tab.id},func:wakePlayback,args:[command]});
+      return {...(responses[0]?.result || {ok:false,error:'empty_wake_response'}),tab_id:tab.id};
+    } catch(e){return {ok:false,error:'wake_playback_injection_failed',detail:String(e),tab_id:tab.id};}
+  }
   if (command.tool === '__snapshot') return snapshot();
+  if (['play_video','play_playlist','youtube_search','show_playlists','open_playlists'].includes(command.tool) ||
+      (command.tool==='media_control' && ['play','pause'].includes(command.action)) ||
+      (command.tool==='playlist_control' && ['next','previous'].includes(command.action))) {
+    const tab=await chooseTargetTab();
+    if(tab?.id)try{await chrome.scripting.executeScript({target:{tabId:tab.id},func:()=>{
+      for(const state of (window.__treadmillWakePauses || new Map()).values())clearTimeout(state.timer);
+    }});}catch(_){}
+  }
   if (['show_playlists', 'open_playlists', 'list_playlists'].includes(command.tool)) {
     const url = 'https://www.youtube.com/feed/playlists';
     const tab = await chooseTargetTab();
@@ -141,7 +215,7 @@ async function execute(command) {
     const destination = tab ? await chrome.tabs.update(tab.id, {url}) : await chrome.tabs.create({url, active:true});
     return {ok:true, detail:'YouTube search navigation requested', url, tab_id:destination.id};
   }
-  const tab = await chooseTargetTab();
+  const tab = command.tool === '__wake_release' && command.tab_id ? {id:command.tab_id} : await chooseTargetTab();
   if (!tab?.id) return {ok:false,error:'no_youtube_tab'};
   try {
     const result = await chrome.tabs.sendMessage(tab.id, command);
@@ -149,7 +223,7 @@ async function execute(command) {
     if (result.ok && command.tool === 'scroll_page') {
       result.scroll_settle = await waitForScrollToSettle(tab.id);
     }
-    return result;
+    return {...result,tab_id:tab.id};
   } catch (e) {
     return {ok:false,error:'content_script_unavailable', detail:String(e)};
   }
@@ -192,3 +266,20 @@ async function pollForever() {
 
 window.addEventListener('pagehide', () => { running = false; });
 pollForever();
+
+const continueButton=document.getElementById('continue-video');
+continueButton.addEventListener('click',async()=>{
+  continueButton.disabled=true;
+  try{
+    const tab=await chooseTargetTab();
+    if(!tab?.id){log('Continue failed: no YouTube tab');return;}
+    const responses=await chrome.scripting.executeScript({target:{tabId:tab.id},func:async()=>{
+      const video=document.querySelector('video.html5-main-video') || document.querySelector('video');
+      if(!video)return {ok:false,error:'no_video_player'};
+      try{await video.play();return {ok:!video.paused};}
+      catch(e){return {ok:false,error:String(e)};}
+    }});
+    log('Continue video: '+JSON.stringify(responses[0]?.result));
+  }catch(e){log('Continue failed: '+String(e));}
+  finally{continueButton.disabled=false;}
+});

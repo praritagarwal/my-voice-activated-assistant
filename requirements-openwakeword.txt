@@ -1,0 +1,4 @@
+-r requirements-voice.txt
+openwakeword>=0.6,<0.7
+onnxruntime>=1.17,<2
+webrtcvad-wheels>=2.0.14,<3

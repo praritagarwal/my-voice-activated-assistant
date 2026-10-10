@@ -74,6 +74,9 @@ class VoiceIO:
         if seconds < 0.25 or float(self.np.sqrt(self.np.mean(waveform ** 2))) < 0.002:
             print('No clear speech captured.'); return '', {'audio_seconds': seconds, 'empty': True}
         started = time.monotonic()
+        from audio_gain import SpeechGain
+        gain=SpeechGain(self.config.get('gain', {}))
+        waveform=self.np.concatenate([gain.process_float(waveform[i:i+480]) for i in range(0,len(waveform),480)])
         segments, _ = self.asr.transcribe(waveform, language='en', beam_size=1, vad_filter=True, condition_on_previous_text=False)
         text = ' '.join(s.text.strip() for s in segments).strip()
         return text, {'audio_seconds': round(seconds, 3), 'asr_seconds': round(time.monotonic()-started, 3), 'audio_status': statuses}
@@ -81,6 +84,7 @@ class VoiceIO:
 
 def action_announcement(command):
     tool = command.get('tool')
+    if tool == 'resume_current': return 'I did not recognise that action. Resuming the current video.'
     if tool == 'youtube_search': return 'Searching YouTube for ' + command['query']
     if tool == 'show_playlists': return 'Listing your playlists.'
     if tool == 'play_playlist': return 'Opening playlist ' + str(command.get('name', command.get('index', '')))

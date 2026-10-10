@@ -177,7 +177,35 @@ function getBrowserState() {
     })()
   };
 }
+const wakePauses = new Map();
 chrome.runtime.onMessage.addListener((cmd, sender, sendResponse) => {
+  if (cmd.tool === '__wake_pause') {
+    if (Date.now()/1000 > cmd.expires_at) {sendResponse({ok:false,error:'wake_pause_expired'});return;}
+    const video=document.querySelector('video');
+    const wasPlaying=Boolean(video && !video.paused && !video.ended);
+    if (wasPlaying) {
+      const state={video,url:location.href,src:video.currentSrc};
+      video.pause();
+      state.timer=setTimeout(() => {
+        if(wakePauses.get(cmd.token)!==state)return;
+        wakePauses.delete(cmd.token);
+        if(location.href===state.url && document.querySelector('video')===video && video.currentSrc===state.src && video.paused)
+          video.play().catch(()=>{});
+      },60000);
+      wakePauses.set(cmd.token,state);
+    }
+    sendResponse({ok:true,was_playing:wasPlaying});return;
+  }
+  if (cmd.tool === '__wake_release') {
+    const state=wakePauses.get(cmd.token);
+    if(!state){sendResponse({ok:true,restored:false});return;}
+    clearTimeout(state.timer);wakePauses.delete(cmd.token);
+    if(cmd.restore && location.href===state.url && document.querySelector('video')===state.video && state.video.currentSrc===state.src && state.video.paused) {
+      state.video.play().then(()=>sendResponse({ok:true,restored:true}))
+        .catch(e=>sendResponse({ok:false,error:'playback_blocked',detail:String(e)}));return true;
+    }
+    sendResponse({ok:true,restored:false});return;
+  }
   if (cmd.tool === '__scroll_position') {
     sendResponse({scroll_y: window.scrollY});
     return;
@@ -188,6 +216,11 @@ chrome.runtime.onMessage.addListener((cmd, sender, sendResponse) => {
     return;
   }
   try {
+    if (cmd.tool === 'play_video' || cmd.tool === 'play_playlist' ||
+        (cmd.tool === 'media_control' && ['pause','play'].includes(cmd.action)) ||
+        (cmd.tool === 'playlist_control' && ['next','previous'].includes(cmd.action))) {
+      for (const state of wakePauses.values()) clearTimeout(state.timer);
+    }
     if (cmd.tool === 'scroll_page') {
       window.scrollBy({top:(cmd.direction === 'up' ? -1 : 1) * innerHeight * cmd.fraction, behavior:'smooth'});
       sendResponse({ok:true, detail:'Scroll requested'});

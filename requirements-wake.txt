@@ -1,0 +1,4 @@
+-r requirements-voice.txt
+sherpa-onnx>=1.12,<2
+sentencepiece>=0.2,<1
+webrtcvad-wheels>=2.0.14,<3

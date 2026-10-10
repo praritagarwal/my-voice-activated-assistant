@@ -10,6 +10,24 @@
     "ptt_key": "f8",
     "input_device": null,
     "output_device": null,
-    "max_recording_seconds": 15
-  }
+    "max_recording_seconds": 15,
+    "wake": {
+      "phrase": "Hey Assistant",
+      "score": 2.0,
+      "threshold": 0.2,
+      "command_start_timeout": 10,
+      "command_silence_seconds": 1.5,
+      "cue_volume": 0.35,
+      "diagnostics": false,
+      "backend": "openwakeword",
+      "openwakeword_threshold": 0.5
+    },
+    "gain": {
+      "enabled": true,
+      "target_dbfs": -24,
+      "max_gain_db": 18,
+      "minimum_dbfs": -60
+    }
+  },
+  "debug_mode": true
 }

@@ -6,6 +6,7 @@ The Chrome controller page long-polls GET /next for validated browser commands.
 
 import json
 import argparse
+import sys
 import re
 import queue
 import threading
@@ -25,13 +26,14 @@ from datetime import datetime, timezone
 CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
 CONFIG_SOURCE = CONFIG_PATH if CONFIG_PATH.exists() else CONFIG_PATH.with_name("config.example.json")
 CONFIG = json.loads(CONFIG_SOURCE.read_text(encoding="utf-8"))
+DEBUG_MODE = bool(CONFIG.get("debug_mode", True)) and "--no-debug" not in sys.argv
 COMMANDS: queue.Queue[dict[str, Any]] = queue.Queue()
 APP = Flask(__name__)
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
 LOG_DIR = CONFIG_PATH.parent / "logs"
-LOG_DIR.mkdir(exist_ok=True)
+if DEBUG_MODE: LOG_DIR.mkdir(exist_ok=True)
 SCREEN_DIR = LOG_DIR / "screenshots"
-SCREEN_DIR.mkdir(exist_ok=True)
+if DEBUG_MODE: SCREEN_DIR.mkdir(exist_ok=True)
 LOG_PATH = LOG_DIR / "interactions.jsonl"
 MAX_INTERACTIONS = 100
 LOG_LOCK = threading.Lock()
@@ -62,11 +64,12 @@ def _load_history() -> None:
         shutil.rmtree(SCREEN_DIR / rid, ignore_errors=True)
     _write_history()
 
-_load_history()
+if DEBUG_MODE: _load_history()
 RESULTS: dict[str, dict[str, Any]] = {}
 RESULT_CONDITION = threading.Condition()
 
 def log_event(request_id: str, event: str, **fields: Any) -> None:
+    if not DEBUG_MODE: return
     record = {"timestamp": datetime.now(timezone.utc).isoformat(), "event": event, **fields}
     with LOG_LOCK:
         if request_id not in INTERACTIONS:
@@ -102,6 +105,7 @@ def save_browser_state(request_id: str, phase: str, result: dict[str, Any]) -> d
 
 
 def browser_snapshot(request_id: str, phase: str, timeout: float = 8.0) -> dict[str, Any]:
+    if not DEBUG_MODE: return {"ok": True, "skipped": True}
     snapshot_id = f"{request_id}:{phase}"
     COMMANDS.put({"tool": "__snapshot", "request_id": snapshot_id})
     with RESULT_CONDITION:
@@ -113,6 +117,7 @@ def browser_snapshot(request_id: str, phase: str, timeout: float = 8.0) -> dict[
 SYSTEM_PROMPT = """You are a precise browser command interpreter. Convert each user instruction into exactly one JSON object, no Markdown or explanation.
 
 Allowed commands:
+- resume_current: {"tool":"resume_current"} (fallback for unrecognised/unsupported instructions; continue the current video without navigation)
 - youtube_search: {"tool":"youtube_search","query":"search terms"}
 - scroll_page: {"tool":"scroll_page","direction":"up"|"down","fraction":0.5|1}
 - play_video: {"tool":"play_video","visible_index":1} (1-based visible result)
@@ -121,6 +126,11 @@ Allowed commands:
 - show_playlists: {"tool":"show_playlists"} (open and list your YouTube playlists; use for show, open, list, find my playlists)
 - play_playlist: {"tool":"play_playlist","index":6} OR {"tool":"play_playlist","name":"playlist name"} (select a playlist, NOT previous/next track)
 - playlist_control: {"tool":"playlist_control","action":"next"|"previous"|"shuffle"} (ONLY for controlling songs already playing; never for choosing a playlist)
+
+INTERPRETATION RULES:
+- Continue, resume, carry on, keep playing, and continue the video mean media_control action play. NEVER interpret these as scrolling or selecting another video.
+- Scroll only when the instruction explicitly requests scrolling or moving the page.
+- If the instruction does not match a supported action, return resume_current. Do not guess an unrelated action.
 
 IMPORTANT FOR SEARCH:
 - Extract the user's intended search phrase. Remove only instructional scaffolding such as 'search for', 'find', 'on YouTube', or 'in YouTube'.
@@ -132,6 +142,12 @@ IMPORTANT FOR SEARCH:
 - Before returning JSON, briefly check that the tool matches the request and every argument (especially video index and playlist name) exactly matches the user's words. Do not output reasoning; output only JSON.
 
 Examples:
+User: Continue.
+Output: {"tool":"media_control","action":"play"}
+User: resume the current video
+Output: {"tool":"media_control","action":"play"}
+User: tell me the weather
+Output: {"tool":"resume_current"}
 User: search A R Rahman songs in youtube
 Output: {"tool":"youtube_search","query":"A R Rahman songs"}
 User: search for a song called Take On Me on YouTube
@@ -272,8 +288,29 @@ def correct_video_index(user_text: str, command: dict[str, Any], request_id: str
         return {**command, "visible_index": explicit}
     return command
 
+def direct_playback_command(user_text):
+    text=re.sub(r"[^a-z0-9 ]", "", user_text.lower())
+    text=" ".join(text.split())
+    text=re.sub(r"^(please |can you |could you )", "", text)
+    text=re.sub(r" please$", "", text)
+    if text in {"continue","resume","carry on","keep playing","play","unpause",
+                "continue playing","resume playback","continue playback","continue the video",
+                "resume the video","continue the current video","resume the current video",
+                "continue the same video","play the current video","continue the song","resume the song"}:
+        return {"tool":"media_control","action":"play"}
+    return None
+
+
+def guard_command_intent(user_text, command):
+    if command.get('tool')=='scroll_page' and not re.search(r"\b(scroll|page)\b",user_text,re.I):
+        return {"tool":"resume_current"}
+    return command
+
+
 def request_tool_call(user_text: str, request_id: str | None = None) -> dict[str, Any]:
     """Ask Ollama to convert a user instruction into a tool call."""
+    direct=direct_playback_command(user_text)
+    if direct is not None:return direct
     payload = {
         "model": CONFIG["model"],
         "stream": False,
@@ -307,8 +344,9 @@ def request_tool_call(user_text: str, request_id: str | None = None) -> dict[str
     # Explicit numbered playlist requests override the model's tool family.
     # Validate the corrected command, rather than rejecting an unrelated but valid LLM call.
     corrected = correct_playlist_selection(user_text, parsed, request_id)
-    command = validate_tool_call(corrected)
-    return correct_video_index(user_text, command, request_id)
+    try:command = validate_tool_call(corrected)
+    except ValueError:return {'tool':'resume_current'}
+    return guard_command_intent(user_text, correct_video_index(user_text, command, request_id))
 
 
 def validate_tool_call(value: Any) -> dict[str, Any]:
@@ -317,6 +355,9 @@ def validate_tool_call(value: Any) -> dict[str, Any]:
         raise ValueError(f"Expected a JSON object, received: {value!r}")
 
     tool = value.get("tool")
+
+    if tool == "resume_current":
+        return {"tool":"resume_current"}
 
     if tool == "youtube_search":
         query = value.get("query")
@@ -373,15 +414,30 @@ def start_local_server() -> None:
     )
 
 
+def browser_request(command, timeout=12):
+    command = {**command, "request_id": command.get("request_id", str(uuid.uuid4()))}
+    rid = command["request_id"]
+    COMMANDS.put(command)
+    with RESULT_CONDITION:
+        arrived = RESULT_CONDITION.wait_for(lambda: rid in RESULTS, timeout=timeout)
+        return RESULTS.pop(rid) if arrived else None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument('--no-debug', action='store_true', help='Skip diagnostic snapshots/screenshots and persistent logs')
+    parser.add_argument('--wake', action='store_true', help='Hands-free Hey Sitara test mode')
     parser.add_argument('--voice', action='store_true', help='Stationary push-to-talk testing; hold F8')
     args = parser.parse_args()
     voice = None
-    if args.voice:
+    wake = None
+    if args.voice or args.wake:
         try:
             from voice_io import VoiceIO
             voice = VoiceIO(CONFIG.get('voice', {}))
+            if args.wake:
+                from wake_word import WakeInput
+                wake = WakeInput(CONFIG.get('voice', {}))
         except Exception as exc:
             print(f'Voice setup failed: {exc}. Use python assistant.py for typed mode.')
             return
@@ -391,15 +447,27 @@ def main() -> None:
     print("Treadmill Assistant ready.")
     print("Open the extension controller tab via the Chrome toolbar icon.")
     print("Keep the controller tab open; switch back to YouTube to browse.")
-    print("This test version accepts typed commands. Press Ctrl+C to exit.\n")
+    print("Input mode:", "wake phrase" if wake else "F8 push-to-talk" if voice else "typed")
+    print("Debug diagnostics:", "on" if DEBUG_MODE else "off")
+    print("Press Ctrl+C to exit.\n")
 
     if voice:
-        voice.speak('Voice input loaded. Keep the Controller tab open. Hold F8 to speak while stationary.')
+        voice.speak(f'Wake input loaded. Keep the Controller tab open. Say {wake.phrase}, wait for the beep, then speak.' if wake else 'Voice input loaded. Keep the Controller tab open. Hold F8 to speak while stationary.')
     while True:
         rid = str(uuid.uuid4())[:12]
+        pause_state = None
+        command = None
+        announcement = None
+        def pause_for_command():
+            nonlocal pause_state
+            pause_state = browser_request({"tool":"__wake_pause", "token":rid,
+                                           "expires_at":time.time()+3}, timeout=3)
+            print('Wake pause result:', json.dumps(pause_state or {'ok':False,'error':'controller_timeout'}), flush=True)
+            if not pause_state or not pause_state.get('ok'):
+                print('Wake pause unavailable; continuing command capture.', flush=True)
         try:
             if voice:
-                user_text, timing = voice.listen()
+                user_text, timing = wake.listen(voice, on_wake=pause_for_command) if wake else voice.listen()
                 if user_text:
                     print('Heard:', user_text)
                     log_event(rid, 'asr_transcript', text=user_text, **timing)
@@ -407,23 +475,40 @@ def main() -> None:
                 user_text = input("Command> ").strip()
             if not user_text:
                 continue
+            pipeline_start = time.monotonic()
+            stages = dict(timing) if voice else {}
             log_event(rid, "user_input", text=user_text)
             # Capture the user's browser state before the LLM interprets the command.
-            before = browser_snapshot(rid, "before")
+            stage_start = time.monotonic()
+            fast_playback = direct_playback_command(user_text) is not None
+            before = {"ok":True,"skipped":True} if fast_playback else browser_snapshot(rid, "before")
+            stages["before_snapshot_s"] = round(time.monotonic()-stage_start,3)
             if not before.get("ok"):
                 print("Snapshot warning:", before.get("error", "unknown"))
             t0 = time.monotonic()
             command = request_tool_call(user_text, rid)
             log_event(rid, "validated_tool_call", command=command, latency_s=round(time.monotonic()-t0, 3))
+            stages["llm_s"] = round(time.monotonic()-t0,3)
             print("Tool call:", json.dumps(command, indent=2))
-            if voice:
-                from voice_io import action_announcement
-                voice.speak(action_announcement(command))
+            stage_start = time.monotonic()
             command["request_id"] = rid
             COMMANDS.put(command)
+            if voice:
+                from interaction import ConcurrentSpeech
+                from voice_io import action_announcement
+                announcement = ConcurrentSpeech(voice, action_announcement(command))
             with RESULT_CONDITION:
                 arrived = RESULT_CONDITION.wait_for(lambda: rid in RESULTS, timeout=12)
                 result = RESULTS.pop(rid) if arrived else None
+            stages["browser_action_s"] = round(time.monotonic()-stage_start,3)
+            stages["transcript_to_browser_result_s"] = round(time.monotonic()-pipeline_start,3)
+            if "wake_to_transcript_s" in stages:
+                stages["wake_to_browser_result_s"] = round(stages["wake_to_transcript_s"] + stages["transcript_to_browser_result_s"],3)
+            print("Action timing:", json.dumps(stages), flush=True)
+            if announcement:
+                announcement.finish()
+                stages["announcement_s"] = announcement.seconds
+            stage_start = time.monotonic()
             if voice:
                 if result is None:
                     voice.speak('Browser response timed out. Check the Controller connection.')
@@ -431,12 +516,17 @@ def main() -> None:
                     voice.speak('That action failed. ' + str(result.get('error', 'Unknown error')).replace('_', ' '))
                 elif command['tool'] == 'show_playlists':
                     voice.speak(f"Found {len(result.get('playlists', []))} loaded playlists.")
+            stages["result_speech_s"] = round(time.monotonic()-stage_start,3)
+            stage_start = time.monotonic()
             # Controller waits for smooth scrolling; snapshot retries until the
             # destination content script is ready after navigation.
-            if command["tool"] in ("youtube_search", "play_video", "show_playlists", "play_playlist"):
+            if DEBUG_MODE and command["tool"] in ("youtube_search", "play_video", "show_playlists", "play_playlist"):
                 time.sleep(0.5)
-            after = browser_snapshot(rid, "after")
-            if command["tool"] in ("youtube_search", "play_video", "show_playlists", "play_playlist") and after.get("ok"):
+            after = {"ok":True,"skipped":True} if command["tool"] in ("media_control","resume_current") else browser_snapshot(rid, "after")
+            stages["after_snapshot_s"] = round(time.monotonic()-stage_start,3)
+            print("Ready timing:", json.dumps(stages), flush=True)
+            log_event(rid, "stage_timings", **stages)
+            if command["tool"] in ("youtube_search", "play_video", "show_playlists", "play_playlist") and after.get("ok") and not after.get("skipped"):
                 state = after.get("state") or {}
                 expected_url = (result or {}).get("url") or ((result or {}).get("selected") or {}).get("url")
                 actual_url = state.get("url", "")
@@ -496,6 +586,15 @@ def main() -> None:
             log_event(rid, 'voice_error', error=str(error))
             voice.speak('Voice input failed. Check the terminal.')
             break
+        finally:
+            if announcement:
+                announcement.finish()
+            if pause_state and pause_state.get('was_playing'):
+                from interaction import should_restore
+                restored = browser_request({"tool":"__wake_release", "token":rid,
+                    "tab_id":pause_state.get('tab_id'), "restore":should_restore(command)}, timeout=2)
+                if not restored or not restored.get('ok'):
+                    print('Wake pause cleanup unavailable; check playback.', flush=True)
 
 
 if __name__ == "__main__":
